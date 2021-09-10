@@ -170,22 +170,54 @@ ret = Susan.calc_variable_stats(ddir+filenames[i,0], ticid = int(filenames[i,0][
 stats[i,:] = ret
 
 #%%
-#Create Table for Variable Stars
-#TIC ID, Name, Max Period, Max Amplitude, 99%(peak to peak)
-
-#stats = np.zeros((len(filenames[:,0]),5))
-
-#for i,f in enumerate(filenames[:,0]):
-#    ret = Susan.calc_variable_stats(ddir+f, ticid = int(f[6:17]), periods=pers)
-#    stats[i,:] = ret
-#print(stats)
 
 #Need run above cells first
 ofn = "/Users/smullally/Science/tess_monitor_standards/paper/variable_stats.csv"
 form = ("%u", "%5.5f", "%.4f", "%.4f", "%.4f")
-np.savetxt(fname= ofn, X = stats, delimiter=" & ", 
-           header = "TIC, period_at_max [d], max_amplitude[percent], 2sigma_pkpk[percent], 3pk2pk[percent]",
+np.savetxt(fname= ofn, X = stats, delimiter=",", 
+           header = "TIC,period_at_max,max_amplitude,2sigma_pkpk,3pk2pk",
            fmt = form)
+
+#%%
+#Get Crowdsap for all stars.
+import lightkurve as lk
+import pandas as p
+target_name_file = "/Users/smullally/Science/tess_monitor_standards/paper/target_names.csv"
+targets = p.read_csv(target_name_file,delimiter=',', header="infer")
+
+for i,t in targets.iterrows():
+    search = lk.search_lightcurve("TIC %u" % t['ticid'], mission='TESS', 
+                              author = ['SPOC','TESS-SPOC'])
+    try:
+        lc = search[search.author=='SPOC'][0].download()
+    except:
+        lc = search[0].download()    
+    print(t['ticid'],lc.CROWDSAP,lc.TIMEDEL)
+#%%
+#Create the Variable table with Pandas
+import pandas as p
+target_name_file = "/Users/smullally/Science/tess_monitor_standards/paper/target_names.csv"
+targets = p.read_csv(target_name_file,delimiter=',', header="infer")
+
+var_stats = p.read_csv(ofn)
+varstars = targets['var'] == 'y'
+vstats = p.DataFrame({'ticid':[],'name':[],'crowdsap':[],'period_max':[],'amp_max':[],'pkpk':[]})
+
+for i,t in targets[varstars].iterrows():
+    want = var_stats['# TIC'] == t['ticid']
+    pmax = float(var_stats[want]['period_at_max'])
+    amax = float(var_stats[want]['max_amplitude'])
+    pkpk = float(var_stats[want]['2sigma_pkpk'])
+    newstat = p.DataFrame({'ticid':str(int(t['ticid'])),'name':t['name'],
+                           'crowdsap':t['crowdsap'], 'pmax':[pmax],
+                           'amax':[amax], 'pkpk':[pkpk]})
+    vstats = vstats.append(newstat)
+
+tabfile = "/Users/smullally/Science/tess_monitor_standards/paper/var_stats.tab"
+vstats.to_latex(buf=tabfile, column_format='llrrrr', index = False,
+               columns = ['name','ticid','crowdsap','pmax','amax','pkpk'],
+               float_format = "%.4f")  
+
 
 #%%
 
@@ -214,6 +246,7 @@ np.savetxt(outfile, stats, delimiter = ",", fmt = form, header = "TIC,sector,sho
 #%%
 import pandas as p
 #The outfile here is the above csv file calculating stats for all data files.
+outfile = "/Users/smullally/Science/tess_monitor_standards/detrended_standards/good/all_data_stats.txt"
 novar_stats = p.read_csv(outfile)
 #The following files comes from the Target_Stars_names excel sheet 1
 target_name_file = "/Users/smullally/Science/tess_monitor_standards/paper/target_names.csv"
@@ -221,7 +254,7 @@ targets = p.read_csv(target_name_file,delimiter=',', header="infer")
 
 novar_list = "/Users/smullally/Science/tess_monitor_standards/paper/" #contain TIC and actual name
 
-stats = p.DataFrame({'ticid':[],'name':[],'dtype':[],'short':[],'long':[],'large':[]})
+stats = p.DataFrame({'ticid':[],'name':[],'crowdsap':[],'short':[],'long':[],'large':[]})
 
 notvariable_ones = targets['var'] == 'n'
 
@@ -230,7 +263,8 @@ for i,t in targets[notvariable_ones].iterrows():
     min_short = np.min(novar_stats[want]['short'])
     min_long = np.min(novar_stats[want]['long'])
     min_large = np.min(novar_stats[want]['3siglarge'])
-    newstat = p.DataFrame({'ticid':str(int(t['ticid'])),'name':t['name'], 'dtype':t['dtype'], 
+    newstat = p.DataFrame({'ticid':str(int(t['ticid'])),'name':t['name'], 
+                           'crowdsap':t['crowdsap'], 
                            'short':[min_short],'long':[min_long], 
                            'large':[min_large]})
     #print(newstat)
@@ -238,20 +272,39 @@ for i,t in targets[notvariable_ones].iterrows():
 
 tabfile = "/Users/smullally/Science/tess_monitor_standards/paper/novar_stats.tab"
 stats.to_latex(buf=tabfile, column_format='lllrrr', index = False,
-               columns = ['ticid','name','dtype','short','long','large'])
+               columns = ['name','ticid','crowdsap','short','long','large'],
+               float_format = "%.4f")
+
 
 #%%
-#Get Crowdsap for all stars.
-import lightkurve as lk
-import pandas as p
+#Target Table
+from astroquery.mast import Catalogs
+from astropy.coordinates import SkyCoord
 target_name_file = "/Users/smullally/Science/tess_monitor_standards/paper/target_names.csv"
 targets = p.read_csv(target_name_file,delimiter=',', header="infer")
 
+ticids = np.array(targets['ticid'])
+tic_data = Catalogs.query_criteria(catalog="Tic",ID = ticids)
+tic_data.add_column('skycoord')
+
+#for i,tic in enumerate(tic_data['ID']):
+sc = SkyCoord(tic_data['ra'], tic_data['dec'],unit='deg',frame='icrs')
+skycoordstr = sc.to_string('hmsdms', precision=0)
+tic_data['skycoord'] = skycoordstr
+tic_p = tic_data.to_pandas()
+
+#tic_data[['ID','Tmag','Teff','logg','skycoord']]
+
+targ_tab = p.DataFrame({'ticid':[],'name':[],'coord':[],'Tmag':[],'sptype':[],'cadence':[]})
 for i,t in targets.iterrows():
-    search = lk.search_lightcurve("TIC %u" % t['ticid'], mission='TESS', 
-                              author = ['SPOC','TESS-SPOC'])
-    try:
-        lc = search[search.author=='SPOC'][0].download()
-    except:
-        lc = search[0].download()    
-    print(t['ticid'],lc.CROWDSAP,lc.TIMEDEL)
+    want = tic_p['ID'].astype(int) == int(t['ticid'])
+    tmag = "%.1f" % float(tic_p[want]['Tmag'])
+    scstr = tic_p[want]['skycoord'].item()
+    row = p.DataFrame({'ticid':[str(int(t['ticid']))],'name':[t['name']],
+                       'coord':[scstr],'Tmag':[tmag],
+                       'sptype':[t['sptype']],'cadence':[t['dtype']]})
+    targ_tab = targ_tab.append(row)
+
+targ_file = "/Users/smullally/Science/tess_monitor_standards/paper/target_table.tab"              
+targ_tab.to_latex(buf = targ_file, column_format = "llllll", index=False, 
+                  columns = ['name','ticid','sptype','Tmag','cadence','coord'])    
